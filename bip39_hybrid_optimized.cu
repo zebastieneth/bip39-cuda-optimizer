@@ -376,18 +376,37 @@ int main() {
     
     std::cout << "Paires générées pour mots 18-19: " << block18_19.size() << std::endl;
     
-    std::vector<std::pair<std::string, std::string>> block20_21 = {
-        {"énergie", "fleur"}, {"énergie", "ombre"}, {"énergie", "poésie"}, 
-        {"énergie", "énorme"}, {"énergie", "cloche"},
-        {"anarchie", "fleur"}, {"anarchie", "ombre"}, {"anarchie", "poésie"}, 
-        {"anarchie", "énorme"}, {"anarchie", "cloche"},
-        {"griffe", "fleur"}, {"griffe", "ombre"}, {"griffe", "poésie"}, 
-        {"griffe", "énorme"}, {"griffe", "cloche"},
-        {"civil", "fleur"}, {"civil", "ombre"}, {"civil", "poésie"}, 
-        {"civil", "énorme"}, {"civil", "cloche"},
-        {"étrange", "fleur"}, {"étrange", "ombre"}, {"étrange", "poésie"}, 
-        {"étrange", "énorme"}, {"étrange", "cloche"}
+    // Block 20-21: 5 groupes de mots, paires générées dans chaque groupe
+    std::vector<std::vector<std::string>> groups_20_21 = {
+        // Groupe 1 (4 mots)
+        {"énergie", "physique", "relatif", "source"},
+        
+        // Groupe 2 (7 mots)
+        {"explorer", "énergie", "mesure", "partager", "parvenir", "source", "système"},
+        
+        // Groupe 3 (8 mots)
+        {"énergie", "libérer", "lumière", "mesure", "système", "titre", "varier", "vitesse"},
+        
+        // Groupe 4 (10 mots)
+        {"anarchie", "critère", "exemple", "janvier", "limite", "monnaie", "octobre", "pouvoir", "social", "système"},
+        
+        // Groupe 5 (14 mots)
+        {"argent", "cuivre", "dépenser", "épargne", "financer", "légal", "mesure", "métal", "monnaie", "papier", "pièce", "précieux", "social", "usage"}
     };
+    
+    // Générer toutes les paires dans chaque groupe (A,B) où A != B
+    std::vector<std::pair<std::string, std::string>> block20_21;
+    for (const auto& group : groups_20_21) {
+        for (size_t i = 0; i < group.size(); ++i) {
+            for (size_t j = 0; j < group.size(); ++j) {
+                if (i != j) {
+                    block20_21.push_back({group[i], group[j]});
+                }
+            }
+        }
+    }
+    
+    std::cout << "Paires générées pour mots 20-21: " << block20_21.size() << std::endl;
     
     std::vector<std::string> block22_24 = {"open", "always", "staff"};
     
