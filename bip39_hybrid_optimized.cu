@@ -290,7 +290,27 @@ uint16_t word_to_index(const std::string& word, const std::vector<std::string>& 
 }
 
 int main() {
-    std::cout << "=== BIP39 CUDA OPTIMIZER - RTX 4090 ===" << std::endl;
+    std::cout << "=== BIP39 CUDA OPTIMIZER - MULTI-GPU ===" << std::endl;
+    
+    // Détecter le nombre de GPUs disponibles
+    int num_gpus;
+    cudaGetDeviceCount(&num_gpus);
+    std::cout << "GPUs détectés: " << num_gpus << std::endl;
+    
+    if (num_gpus == 0) {
+        std::cerr << "Erreur: Aucun GPU CUDA détecté!" << std::endl;
+        return 1;
+    }
+    
+    // Afficher les infos de chaque GPU
+    for (int i = 0; i < num_gpus; ++i) {
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, i);
+        std::cout << "GPU " << i << ": " << prop.name 
+                  << " (" << prop.multiProcessorCount << " SMs, "
+                  << prop.totalGlobalMem / (1024*1024*1024) << " GB)" << std::endl;
+    }
+    std::cout << std::endl;
     
     // Charger la wordlist BIP39 anglaise (pour les mots cibles)
     std::vector<std::string> wordlist = load_wordlist("english.txt");
@@ -453,94 +473,158 @@ int main() {
         h_targets.push_back(word_to_index(w, wordlist));
     }
     
-    // Allocation GPU
-    uint16_t *d_block1_14, *d_block15_16, *d_block17, *d_block18_19;
-    uint16_t *d_block20_21, *d_block22_24, *d_targets, *d_result;
-    bool *d_found;
-    
-    cudaMalloc(&d_block1_14, h_block1_14.size() * sizeof(uint16_t));
-    cudaMalloc(&d_block15_16, h_block15_16.size() * sizeof(uint16_t));
-    cudaMalloc(&d_block17, h_block17.size() * sizeof(uint16_t));
-    cudaMalloc(&d_block18_19, h_block18_19.size() * sizeof(uint16_t));
-    cudaMalloc(&d_block20_21, h_block20_21.size() * sizeof(uint16_t));
-    cudaMalloc(&d_block22_24, h_block22_24.size() * sizeof(uint16_t));
-    cudaMalloc(&d_targets, h_targets.size() * sizeof(uint16_t));
-    cudaMalloc(&d_result, 24 * sizeof(uint16_t));
-    cudaMalloc(&d_found, sizeof(bool));
-    
-    // Copie vers GPU
-    cudaMemcpy(d_block1_14, h_block1_14.data(), h_block1_14.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_block15_16, h_block15_16.data(), h_block15_16.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_block17, h_block17.data(), h_block17.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_block18_19, h_block18_19.data(), h_block18_19.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_block20_21, h_block20_21.data(), h_block20_21.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_block22_24, h_block22_24.data(), h_block22_24.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_targets, h_targets.data(), h_targets.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
-    
-    bool h_found = false;
-    cudaMemcpy(d_found, &h_found, sizeof(bool), cudaMemcpyHostToDevice);
-    
-    // Configuration kernel (optimisé pour RTX 4090)
+    // Configuration pour multi-GPU
     int threads = 256;
-    unsigned long long total = (unsigned long long)phrases_1_14.size() * 
-                               block15_16.size() * 
-                               block17.size() * 
-                               block18_19.size() * 
-                               block20_21.size();
-    int blocks = (total + threads - 1) / threads;
+    unsigned long long total_combinations = (unsigned long long)phrases_1_14.size() * 
+                                            block15_16.size() * 
+                                            block17.size() * 
+                                            block18_19.size() * 
+                                            block20_21.size();
     
-    std::cout << "Combinaisons totales: " << total << std::endl;
-    std::cout << "Lancement: " << blocks << " blocks x " << threads << " threads" << std::endl;
+    std::cout << "Combinaisons totales: " << total_combinations << std::endl;
+    std::cout << "Répartition sur " << num_gpus << " GPU(s)" << std::endl << std::endl;
+    
+    // Diviser le travail entre les GPUs (par phrases)
+    int phrases_per_gpu = (phrases_1_14.size() + num_gpus - 1) / num_gpus;
+    
+    // Variables pour stocker les pointeurs de chaque GPU
+    std::vector<uint16_t*> d_block1_14_vec(num_gpus);
+    std::vector<uint16_t*> d_block15_16_vec(num_gpus);
+    std::vector<uint16_t*> d_block17_vec(num_gpus);
+    std::vector<uint16_t*> d_block18_19_vec(num_gpus);
+    std::vector<uint16_t*> d_block20_21_vec(num_gpus);
+    std::vector<uint16_t*> d_block22_24_vec(num_gpus);
+    std::vector<uint16_t*> d_targets_vec(num_gpus);
+    std::vector<uint16_t*> d_result_vec(num_gpus);
+    std::vector<bool*> d_found_vec(num_gpus);
     
     auto start = std::chrono::high_resolution_clock::now();
     
-    // Lancement kernel
-    test_combinations_kernel<<<blocks, threads>>>(
-        d_block1_14, d_block15_16, d_block17, d_block18_19,
-        d_block20_21, d_block22_24, d_targets,
-        phrases_1_14.size(), 
-        block15_16.size(),
-        block17.size(),
-        block18_19.size(),
-        block20_21.size(),
-        d_found, d_result
-    );
+    // Lancer sur chaque GPU
+    for (int gpu = 0; gpu < num_gpus; ++gpu) {
+        cudaSetDevice(gpu);
+        
+        // Calculer la portion de phrases pour ce GPU
+        int start_phrase = gpu * phrases_per_gpu;
+        int end_phrase = std::min(start_phrase + phrases_per_gpu, (int)phrases_1_14.size());
+        int num_phrases_this_gpu = end_phrase - start_phrase;
+        
+        if (num_phrases_this_gpu <= 0) continue;
+        
+        std::cout << "GPU " << gpu << ": phrases " << start_phrase << " à " << end_phrase-1 
+                  << " (" << num_phrases_this_gpu << " phrases)" << std::endl;
+        
+        // Extraire les phrases pour ce GPU
+        std::vector<uint16_t> h_block1_14_gpu;
+        for (int i = start_phrase; i < end_phrase; ++i) {
+            h_block1_14_gpu.insert(h_block1_14_gpu.end(), 
+                                   h_block1_14.begin() + i * 14, 
+                                   h_block1_14.begin() + (i + 1) * 14);
+        }
+        
+        // Allocation GPU
+        cudaMalloc(&d_block1_14_vec[gpu], h_block1_14_gpu.size() * sizeof(uint16_t));
+        cudaMalloc(&d_block15_16_vec[gpu], h_block15_16.size() * sizeof(uint16_t));
+        cudaMalloc(&d_block17_vec[gpu], h_block17.size() * sizeof(uint16_t));
+        cudaMalloc(&d_block18_19_vec[gpu], h_block18_19.size() * sizeof(uint16_t));
+        cudaMalloc(&d_block20_21_vec[gpu], h_block20_21.size() * sizeof(uint16_t));
+        cudaMalloc(&d_block22_24_vec[gpu], h_block22_24.size() * sizeof(uint16_t));
+        cudaMalloc(&d_targets_vec[gpu], h_targets.size() * sizeof(uint16_t));
+        cudaMalloc(&d_result_vec[gpu], 24 * sizeof(uint16_t));
+        cudaMalloc(&d_found_vec[gpu], sizeof(bool));
+        
+        // Copie vers GPU
+        cudaMemcpy(d_block1_14_vec[gpu], h_block1_14_gpu.data(), h_block1_14_gpu.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_block15_16_vec[gpu], h_block15_16.data(), h_block15_16.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_block17_vec[gpu], h_block17.data(), h_block17.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_block18_19_vec[gpu], h_block18_19.data(), h_block18_19.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_block20_21_vec[gpu], h_block20_21.data(), h_block20_21.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_block22_24_vec[gpu], h_block22_24.data(), h_block22_24.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_targets_vec[gpu], h_targets.data(), h_targets.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
+        
+        bool h_found = false;
+        cudaMemcpy(d_found_vec[gpu], &h_found, sizeof(bool), cudaMemcpyHostToDevice);
+        
+        // Calculer le nombre de blocks pour ce GPU
+        unsigned long long total_this_gpu = (unsigned long long)num_phrases_this_gpu * 
+                                            block15_16.size() * 
+                                            block17.size() * 
+                                            block18_19.size() * 
+                                            block20_21.size();
+        int blocks = (total_this_gpu + threads - 1) / threads;
+        
+        std::cout << "  Combinaisons: " << total_this_gpu << " (" << blocks << " blocks)" << std::endl;
+        
+        // Lancement kernel sur ce GPU
+        test_combinations_kernel<<<blocks, threads>>>(
+            d_block1_14_vec[gpu], d_block15_16_vec[gpu], d_block17_vec[gpu], d_block18_19_vec[gpu],
+            d_block20_21_vec[gpu], d_block22_24_vec[gpu], d_targets_vec[gpu],
+            num_phrases_this_gpu, 
+            block15_16.size(),
+            block17.size(),
+            block18_19.size(),
+            block20_21.size(),
+            d_found_vec[gpu], d_result_vec[gpu]
+        );
+    }
     
-    cudaDeviceSynchronize();
+    std::cout << "\n🚀 Calcul en cours sur " << num_gpus << " GPU(s)..." << std::endl;
+    
+    // Attendre que tous les GPUs finissent
+    for (int gpu = 0; gpu < num_gpus; ++gpu) {
+        cudaSetDevice(gpu);
+        cudaDeviceSynchronize();
+    }
     
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     
-    // Récupération résultat
-    cudaMemcpy(&h_found, d_found, sizeof(bool), cudaMemcpyDeviceToHost);
+    // Vérifier les résultats de chaque GPU
+    bool found = false;
+    std::vector<uint16_t> result(24);
+    int gpu_found = -1;
     
-    if (h_found) {
-        std::vector<uint16_t> result(24);
-        cudaMemcpy(result.data(), d_result, 24 * sizeof(uint16_t), cudaMemcpyDeviceToHost);
+    for (int gpu = 0; gpu < num_gpus; ++gpu) {
+        cudaSetDevice(gpu);
+        bool h_found;
+        cudaMemcpy(&h_found, d_found_vec[gpu], sizeof(bool), cudaMemcpyDeviceToHost);
         
-        std::cout << "\n=== TROUVÉ ===" << std::endl;
+        if (h_found) {
+            found = true;
+            gpu_found = gpu;
+            cudaMemcpy(result.data(), d_result_vec[gpu], 24 * sizeof(uint16_t), cudaMemcpyDeviceToHost);
+            break;
+        }
+    }
+    
+    if (found) {
+        std::cout << "\n🎉 === TROUVÉ sur GPU " << gpu_found << " ===" << std::endl;
         for (int i = 0; i < 24; ++i) {
             std::cout << wordlist[result[i]] << " ";
         }
         std::cout << std::endl;
     } else {
-        std::cout << "\nAucune solution trouvée." << std::endl;
+        std::cout << "\n❌ Aucune solution trouvée." << std::endl;
     }
     
-    double speed = (double)total / (duration.count() / 1000.0);
-    std::cout << "\nTemps: " << duration.count() << " ms" << std::endl;
-    std::cout << "Vitesse: " << speed / 1e9 << " GH/s" << std::endl;
+    double speed = (double)total_combinations / (duration.count() / 1000.0);
+    std::cout << "\n⏱️  Temps total: " << duration.count() / 1000.0 << " secondes" << std::endl;
+    std::cout << "⚡ Vitesse globale: " << speed / 1e9 << " GH/s" << std::endl;
+    std::cout << "🚀 Vitesse par GPU: " << (speed / num_gpus) / 1e9 << " GH/s" << std::endl;
     
-    // Libération mémoire
-    cudaFree(d_block1_14);
-    cudaFree(d_block15_16);
-    cudaFree(d_block17);
-    cudaFree(d_block18_19);
-    cudaFree(d_block20_21);
-    cudaFree(d_block22_24);
-    cudaFree(d_targets);
-    cudaFree(d_result);
-    cudaFree(d_found);
+    // Libération mémoire de tous les GPUs
+    for (int gpu = 0; gpu < num_gpus; ++gpu) {
+        cudaSetDevice(gpu);
+        cudaFree(d_block1_14_vec[gpu]);
+        cudaFree(d_block15_16_vec[gpu]);
+        cudaFree(d_block17_vec[gpu]);
+        cudaFree(d_block18_19_vec[gpu]);
+        cudaFree(d_block20_21_vec[gpu]);
+        cudaFree(d_block22_24_vec[gpu]);
+        cudaFree(d_targets_vec[gpu]);
+        cudaFree(d_result_vec[gpu]);
+        cudaFree(d_found_vec[gpu]);
+    }
     
     return 0;
 }
