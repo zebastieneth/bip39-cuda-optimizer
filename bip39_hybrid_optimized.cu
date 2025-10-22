@@ -150,13 +150,17 @@ __device__ bool validate_checksum(const uint16_t* indices, int checksum_word_idx
 
 __global__ void test_combinations_kernel(
     const uint16_t* block1_14,    // Mots 1-14 du fichier
-    const uint16_t* block15_16,   // Mots 15-16 (4 mots)
-    const uint16_t* block17,      // Mot 17 (3 mots)
-    const uint16_t* block18_19,   // Mots 18-19 (3 mots)
-    const uint16_t* block20_21,   // Mots 20-21 (25 groupes de 2)
+    const uint16_t* block15_16,   // Mots 15-16 (paires)
+    const uint16_t* block17,      // Mot 17
+    const uint16_t* block18_19,   // Mots 18-19
+    const uint16_t* block20_21,   // Mots 20-21
     const uint16_t* block22_24,   // Mots 22-24 fixes
     const uint16_t* target_words, // 8 mots cibles
     int num_block1_14,
+    int num_block15_16,
+    int num_block17,
+    int num_block18_19,
+    int num_block20_21,
     bool* found,
     uint16_t* result
 ) {
@@ -173,9 +177,9 @@ __global__ void test_combinations_kernel(
     // Early exit si déjà trouvé
     if (*found) return;
     
-    // Calcul des indices pour chaque bloc
+    // Calcul des indices pour chaque bloc (dynamique)
     unsigned long long total_combinations = 
-        (unsigned long long)num_block1_14 * 4 * 3 * 3 * 25;
+        (unsigned long long)num_block1_14 * num_block15_16 * num_block17 * num_block18_19 * num_block20_21;
     
     if (idx >= total_combinations) return;
     
@@ -183,16 +187,16 @@ __global__ void test_combinations_kernel(
     int i1_14 = idx % num_block1_14;
     unsigned long long temp = idx / num_block1_14;
     
-    int i15_16 = temp % 4;
-    temp /= 4;
+    int i15_16 = temp % num_block15_16;
+    temp /= num_block15_16;
     
-    int i17 = temp % 3;
-    temp /= 3;
+    int i17 = temp % num_block17;
+    temp /= num_block17;
     
-    int i18_19 = temp % 3;
-    temp /= 3;
+    int i18_19 = temp % num_block18_19;
+    temp /= num_block18_19;
     
-    int i20_21 = temp % 25;
+    int i20_21 = temp % num_block20_21;
     
     // Construction de la phrase complète
     uint16_t phrase[24];
@@ -317,10 +321,30 @@ int main() {
     std::cout << "Phrases 1-14 chargées: " << phrases_1_14.size() << std::endl;
     
     // Définir les blocs de mots
-    std::vector<std::pair<std::string, std::string>> block15_16 = {
-        {"laitue", "peser"}, {"laitue", "pouvoir"},
-        {"prairie", "peser"}, {"prairie", "pouvoir"}
+    // Block 15-16: Liste des mots à combiner
+    std::vector<std::string> words_15_16 = {
+        "utopie", "vacarme", "vaccin", "vagabond", "vague", "vaillant", "vaincre", "vaisseau",
+        "valable", "valise", "vallon", "valve", "vampire", "vanille", "vapeur", "varier",
+        "vaseux", "vassal", "vaste", "vecteur", "vedette", "végétal", "véhicule", "veinard",
+        "véloce", "vendredi", "vénérer", "venger", "venimeux", "ventouse", "verdure", "vérin",
+        "vernir", "verrou", "verser", "vertu", "veston", "vétéran", "vétuste", "vexant",
+        "vexer", "viaduc", "viande", "victoire", "vidange", "vidéo", "vignette", "vigueur",
+        "vilain", "village", "vinaigre", "violon", "vipère", "virement", "virtuose", "virus",
+        "visage", "viseur", "vision", "visqueux", "visuel", "vital", "vitesse", "viticole", "vitrine"
     };
+    
+    // Générer toutes les paires (A,B) où A != B
+    // A-B et B-A comptent comme deux paires différentes
+    std::vector<std::pair<std::string, std::string>> block15_16;
+    for (size_t i = 0; i < words_15_16.size(); ++i) {
+        for (size_t j = 0; j < words_15_16.size(); ++j) {
+            if (i != j) {  // Pas de paires avec le même mot deux fois
+                block15_16.push_back({words_15_16[i], words_15_16[j]});
+            }
+        }
+    }
+    
+    std::cout << "Paires générées pour mots 15-16: " << block15_16.size() << std::endl;
     
     std::vector<std::string> block17 = {"motif", "peintre", "sécher"};
     
@@ -415,7 +439,11 @@ int main() {
     
     // Configuration kernel (optimisé pour RTX 4090)
     int threads = 256;
-    unsigned long long total = (unsigned long long)phrases_1_14.size() * 4 * 3 * 3 * 25;
+    unsigned long long total = (unsigned long long)phrases_1_14.size() * 
+                               block15_16.size() * 
+                               block17.size() * 
+                               block18_19.size() * 
+                               block20_21.size();
     int blocks = (total + threads - 1) / threads;
     
     std::cout << "Combinaisons totales: " << total << std::endl;
@@ -427,7 +455,12 @@ int main() {
     test_combinations_kernel<<<blocks, threads>>>(
         d_block1_14, d_block15_16, d_block17, d_block18_19,
         d_block20_21, d_block22_24, d_targets,
-        phrases_1_14.size(), d_found, d_result
+        phrases_1_14.size(), 
+        block15_16.size(),
+        block17.size(),
+        block18_19.size(),
+        block20_21.size(),
+        d_found, d_result
     );
     
     cudaDeviceSynchronize();
