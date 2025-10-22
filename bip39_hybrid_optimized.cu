@@ -292,12 +292,21 @@ uint16_t word_to_index(const std::string& word, const std::vector<std::string>& 
 int main() {
     std::cout << "=== BIP39 CUDA OPTIMIZER - RTX 4090 ===" << std::endl;
     
-    // Charger la wordlist BIP39
+    // Charger la wordlist BIP39 anglaise (pour les mots cibles)
     std::vector<std::string> wordlist = load_wordlist("english.txt");
     if (wordlist.size() != 2048) {
-        std::cerr << "Erreur: wordlist invalide" << std::endl;
+        std::cerr << "Erreur: wordlist anglaise invalide" << std::endl;
         return 1;
     }
+    
+    // Charger la wordlist BIP39 française (pour le mot 17)
+    std::vector<std::string> french_wordlist = load_wordlist("french.txt");
+    if (french_wordlist.size() != 2048) {
+        std::cerr << "Erreur: wordlist française invalide (attendu 2048 mots, obtenu " 
+                  << french_wordlist.size() << ")" << std::endl;
+        return 1;
+    }
+    std::cout << "Wordlist française chargée: " << french_wordlist.size() << " mots" << std::endl;
     
     // Charger les phrases 1-14
     std::vector<std::vector<uint16_t>> phrases_1_14;
@@ -346,7 +355,9 @@ int main() {
     
     std::cout << "Paires générées pour mots 15-16: " << block15_16.size() << std::endl;
     
-    std::vector<std::string> block17 = {"motif", "peintre", "sécher"};
+    // Block 17: Tous les 2048 mots de la wordlist française
+    std::vector<std::string> block17 = french_wordlist;
+    std::cout << "Mots pour position 17: " << block17.size() << std::endl;
     
     std::vector<std::pair<std::string, std::string>> block18_19 = {
         {"écrire", "histoire"}, {"écrire", "mérite"}, {"histoire", "mérite"}
@@ -385,7 +396,7 @@ int main() {
     
     std::vector<uint16_t> h_block17;
     for (const auto& w : block17) {
-        h_block17.push_back(word_to_index(w, wordlist));
+        h_block17.push_back(word_to_index(w, french_wordlist));
     }
     
     std::vector<uint16_t> h_block18_19;

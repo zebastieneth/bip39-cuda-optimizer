@@ -1,8 +1,8 @@
-name: CUDA Build Test
+name: CUDA Build and Test
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
   pull_request:
     branches: [ main ]
 
@@ -11,24 +11,46 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout code
+      uses: actions/checkout@v3
     
-    - name: Install CUDA
+    - name: Install CUDA Toolkit
       uses: Jimver/cuda-toolkit@v0.2.11
       with:
-        cuda: '12.3.0'
+        cuda: '12.2.0'
     
-    - name: Verify CUDA
-      run: nvcc --version
+    - name: Verify CUDA installation
+      run: |
+        nvcc --version
+        which nvcc
     
-    - name: Download wordlist
-      run: wget https://raw.githubusercontent.com/bitcoin/bips/master/bip-0039/english.txt
+    - name: Download BIP39 wordlists
+      run: |
+        wget https://raw.githubusercontent.com/bitcoin/bips/master/bip-0039/english.txt
+        wget https://raw.githubusercontent.com/bitcoin/bips/master/bip-0039/french.txt
     
-    - name: Create test file
-      run: echo "abandon ability able about above absent absorb abstract absurd abuse access accident account across" > phrases_14_mots.txt
+    - name: Create test phrases file
+      run: |
+        echo "abandon ability able about above absent absorb abstract absurd abuse access accident account across" > phrases_14_mots.txt
     
-    - name: Compile
-      run: make
+    - name: Compile project
+      run: |
+        make
     
-    - name: Check build
-      run: test -f bip39_hybrid
+    - name: Check compilation artifacts
+      run: |
+        ls -lh
+        test -f bip39_hybrid
+    
+    # Note: Cannot run GPU tests on GitHub Actions without GPU runners
+    # This CI only validates compilation
+    
+    - name: Archive build artifacts
+      if: success()
+      uses: actions/upload-artifact@v3
+      with:
+        name: bip39-cuda-build
+        path: |
+          bip39_hybrid
+          *.md
+          Makefile
