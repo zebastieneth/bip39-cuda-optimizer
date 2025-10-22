@@ -1,0 +1,34 @@
+name: CUDA Build Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install CUDA
+      uses: Jimver/cuda-toolkit@v0.2.11
+      with:
+        cuda: '12.3.0'
+    
+    - name: Verify CUDA
+      run: nvcc --version
+    
+    - name: Download wordlist
+      run: wget https://raw.githubusercontent.com/bitcoin/bips/master/bip-0039/english.txt
+    
+    - name: Create test file
+      run: echo "abandon ability able about above absent absorb abstract absurd abuse access accident account across" > phrases_14_mots.txt
+    
+    - name: Compile
+      run: make
+    
+    - name: Check build
+      run: test -f bip39_hybrid

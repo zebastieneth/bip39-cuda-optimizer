@@ -1,0 +1,45 @@
+# Exécutables
+bip39_hybrid
+*.out
+*.exe
+
+# Fichiers de compilation
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+
+# Fichiers CUDA
+*.ptx
+*.cubin
+*.fatbin
+
+# Données sensibles
+phrases_14_mots.txt
+english.txt
+results.txt
+found_phrases.txt
+
+# Fichiers de backup
+*.bak
+*.swp
+*~
+
+# Dossiers de build
+build/
+bin/
+obj/
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
