@@ -359,9 +359,22 @@ int main() {
     std::vector<std::string> block17 = french_wordlist;
     std::cout << "Mots pour position 17: " << block17.size() << std::endl;
     
-    std::vector<std::pair<std::string, std::string>> block18_19 = {
-        {"écrire", "histoire"}, {"écrire", "mérite"}, {"histoire", "mérite"}
+    // Block 18-19: Liste des mots à combiner
+    std::vector<std::string> words_18_19 = {
+        "énergie", "monnaie", "économie", "progrès", "amour", "bonheur", "science"
     };
+    
+    // Générer toutes les paires (A,B) où A != B
+    std::vector<std::pair<std::string, std::string>> block18_19;
+    for (size_t i = 0; i < words_18_19.size(); ++i) {
+        for (size_t j = 0; j < words_18_19.size(); ++j) {
+            if (i != j) {
+                block18_19.push_back({words_18_19[i], words_18_19[j]});
+            }
+        }
+    }
+    
+    std::cout << "Paires générées pour mots 18-19: " << block18_19.size() << std::endl;
     
     std::vector<std::pair<std::string, std::string>> block20_21 = {
         {"énergie", "fleur"}, {"énergie", "ombre"}, {"énergie", "poésie"}, 
