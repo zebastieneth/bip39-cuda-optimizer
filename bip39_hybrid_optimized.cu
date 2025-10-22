@@ -410,8 +410,8 @@ int main() {
         // Groupe 4 (10 mots)
         {"anarchie", "critère", "exemple", "janvier", "limite", "monnaie", "octobre", "pouvoir", "social", "système"},
         
-        // Groupe 5 (14 mots)
-        {"argent", "cuivre", "dépenser", "épargne", "financer", "légal", "mesure", "métal", "monnaie", "papier", "pièce", "précieux", "social", "usage"}
+        // Groupe 5 (11 mots)
+        {"argent", "cuivre", "dépenser", "épargne", "financer", "légal", "mesure", "métal", "monnaie", "papier", "pièce"}
     };
     
     // Générer toutes les paires dans chaque groupe (A,B) où A != B
