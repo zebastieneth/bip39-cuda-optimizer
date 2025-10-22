@@ -18,7 +18,6 @@ bip39_hybrid
 
 # Données sensibles
 phrases_14_mots.txt
-english.txt
 results.txt
 found_phrases.txt
 
