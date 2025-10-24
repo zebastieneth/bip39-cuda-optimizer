@@ -39,23 +39,21 @@ __device__ __constant__ uint32_t K[64] = {
 __device__ __forceinline__ void sha256_transform(uint32_t state[8], const uint8_t data[64]) {
     uint32_t m[64];
     uint32_t a, b, c, d, e, f, g, h, t1, t2;
-    
-    // Prepare message schedule with unrolling
+
     #pragma unroll
     for (int i = 0; i < 16; ++i) {
         int j = i << 2;
         m[i] = (data[j] << 24) | (data[j + 1] << 16) | (data[j + 2] << 8) | (data[j + 3]);
     }
-    
+
     #pragma unroll
     for (int i = 16; i < 64; ++i) {
         m[i] = SIG1(m[i - 2]) + m[i - 7] + SIG0(m[i - 15]) + m[i - 16];
     }
-    
+
     a = state[0]; b = state[1]; c = state[2]; d = state[3];
     e = state[4]; f = state[5]; g = state[6]; h = state[7];
-    
-    // Main loop unrolled
+
     #pragma unroll
     for (int i = 0; i < 64; ++i) {
         t1 = h + EP1(e) + CH(e, f, g) + K[i] + m[i];
@@ -63,7 +61,7 @@ __device__ __forceinline__ void sha256_transform(uint32_t state[8], const uint8_
         h = g; g = f; f = e; e = d + t1;
         d = c; c = b; b = a; a = t1 + t2;
     }
-    
+
     state[0] += a; state[1] += b; state[2] += c; state[3] += d;
     state[4] += e; state[5] += f; state[6] += g; state[7] += h;
 }
@@ -73,33 +71,33 @@ __device__ void sha256_hash(const uint8_t* data, size_t len, uint8_t* hash) {
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
         0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
     };
-    
+
     uint8_t block[64];
     size_t i = 0;
-    
+
     while (len >= 64) {
         memcpy(block, data + i, 64);
         sha256_transform(state, block);
         i += 64;
         len -= 64;
     }
-    
+
     memset(block, 0, 64);
     memcpy(block, data + i, len);
     block[len] = 0x80;
-    
+
     if (len >= 56) {
         sha256_transform(state, block);
         memset(block, 0, 64);
     }
-    
+
     uint64_t bitlen = (i + len) * 8;
     for (int j = 0; j < 8; ++j) {
         block[63 - j] = bitlen >> (j * 8);
     }
-    
+
     sha256_transform(state, block);
-    
+
     for (int j = 0; j < 8; ++j) {
         hash[j * 4] = (state[j] >> 24) & 0xff;
         hash[j * 4 + 1] = (state[j] >> 16) & 0xff;
@@ -109,18 +107,20 @@ __device__ void sha256_hash(const uint8_t* data, size_t len, uint8_t* hash) {
 }
 
 // ============================================================================
-// BIP39 CHECKSUM VALIDATION
+// BIP39 CHECKSUM VALIDATION - OPTIMIZED
 // ============================================================================
 
-__device__ bool validate_checksum(const uint16_t* indices, int checksum_word_idx) {
+__device__ bool validate_checksum(const uint16_t* indices) {
     // Convert indices to entropy bytes
     uint8_t entropy[33]; // 24 words * 11 bits = 264 bits = 33 bytes
     memset(entropy, 0, 33);
-    
+
     // Pack 11-bit indices into entropy
     int bit_pos = 0;
+    #pragma unroll
     for (int i = 0; i < 24; ++i) {
         uint16_t idx = indices[i];
+        #pragma unroll
         for (int b = 10; b >= 0; --b) {
             int byte_pos = bit_pos / 8;
             int bit_in_byte = 7 - (bit_pos % 8);
@@ -130,32 +130,33 @@ __device__ bool validate_checksum(const uint16_t* indices, int checksum_word_idx
             bit_pos++;
         }
     }
-    
+
     // Hash the first 32 bytes
     uint8_t hash[32];
     sha256_hash(entropy, 32, hash);
-    
+
     // Extract checksum bits (first 8 bits of hash)
     uint8_t computed_checksum = hash[0];
-    
+
     // Extract checksum from last word (last 8 bits of entropy)
     uint8_t stored_checksum = entropy[32];
-    
+
     return computed_checksum == stored_checksum;
 }
 
 // ============================================================================
-// KERNEL: PARALLEL CHECKSUM TESTING
+// KERNEL: TEST ALL 8 CHECKSUMS FOR EACH COMBINATION
 // ============================================================================
 
 __global__ void test_combinations_kernel(
-    const uint16_t* block1_14,    // Mots 1-14 du fichier
-    const uint16_t* block15_16,   // Mots 15-16 (paires)
-    const uint16_t* block17,      // Mot 17
-    const uint16_t* block18_19,   // Mots 18-19
-    const uint16_t* block20_21,   // Mots 20-21
-    const uint16_t* block22_24,   // Mots 22-24 fixes
-    const uint16_t* target_words, // 8 mots cibles
+    const uint16_t* block1_14,    // Words 1-14 from file
+    const uint16_t* block15_16,   // Words 15-16 (pairs)
+    const uint16_t* block17,      // Word 17
+    const uint16_t* block18_19,   // Words 18-19
+    const uint16_t* block20_21,   // Words 20-21
+    uint16_t word22,              // FIXED: "open"
+    uint16_t word23,              // FIXED: "always"
+    const uint16_t* word24_candidates, // 8 candidate words for position 24
     int num_block1_14,
     int num_block15_16,
     int num_block17,
@@ -164,99 +165,89 @@ __global__ void test_combinations_kernel(
     bool* found,
     uint16_t* result
 ) {
-    // Shared memory pour les mots cibles (optimisation)
-    __shared__ uint16_t s_targets[8];
+    // Shared memory for word 24 candidates (optimization)
+    __shared__ uint16_t s_word24[8];
     if (threadIdx.x < 8) {
-        s_targets[threadIdx.x] = target_words[threadIdx.x];
+        s_word24[threadIdx.x] = word24_candidates[threadIdx.x];
     }
     __syncthreads();
-    
-    // Calcul de l'index global
+
+    // Calculate global index
     unsigned long long idx = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    // Early exit si déjà trouvé
+
+    // Early exit if already found
     if (*found) return;
-    
-    // Calcul des indices pour chaque bloc (dynamique)
-    unsigned long long total_combinations = 
+
+    // Calculate total combinations
+    unsigned long long total_combinations =
         (unsigned long long)num_block1_14 * num_block15_16 * num_block17 * num_block18_19 * num_block20_21;
-    
+
     if (idx >= total_combinations) return;
-    
-    // Décomposition de l'index
+
+    // Decompose index into block indices
     int i1_14 = idx % num_block1_14;
     unsigned long long temp = idx / num_block1_14;
-    
+
     int i15_16 = temp % num_block15_16;
     temp /= num_block15_16;
-    
+
     int i17 = temp % num_block17;
     temp /= num_block17;
-    
+
     int i18_19 = temp % num_block18_19;
     temp /= num_block18_19;
-    
+
     int i20_21 = temp % num_block20_21;
-    
-    // Construction de la phrase complète
+
+    // Build the phrase (words 1-23 are fixed for this combination)
     uint16_t phrase[24];
-    
-    // Mots 1-14
-    phrase[0] = block1_14[i1_14 * 14 + 0];
-    phrase[1] = block1_14[i1_14 * 14 + 1];
-    phrase[2] = block1_14[i1_14 * 14 + 2];
-    phrase[3] = block1_14[i1_14 * 14 + 3];
-    phrase[4] = block1_14[i1_14 * 14 + 4];
-    phrase[5] = block1_14[i1_14 * 14 + 5];
-    phrase[6] = block1_14[i1_14 * 14 + 6];
-    phrase[7] = block1_14[i1_14 * 14 + 7];
-    phrase[8] = block1_14[i1_14 * 14 + 8];
-    phrase[9] = block1_14[i1_14 * 14 + 9];
-    phrase[10] = block1_14[i1_14 * 14 + 10];
-    phrase[11] = block1_14[i1_14 * 14 + 11];
-    phrase[12] = block1_14[i1_14 * 14 + 12];
-    phrase[13] = block1_14[i1_14 * 14 + 13];
-    
-    // Mots 15-16
-    phrase[14] = block15_16[i15_16 * 2 + 0];
-    phrase[15] = block15_16[i15_16 * 2 + 1];
-    
-    // Mot 17
-    phrase[16] = block17[i17];
-    
-    // Mots 18-19
-    phrase[17] = block18_19[i18_19 * 2 + 0];
-    phrase[18] = block18_19[i18_19 * 2 + 1];
-    
-    // Mots 20-21
-    phrase[19] = block20_21[i20_21 * 2 + 0];
-    phrase[20] = block20_21[i20_21 * 2 + 1];
-    
-    // Mots 22-24 (fixes)
-    phrase[21] = block22_24[0];
-    phrase[22] = block22_24[1];
-    phrase[23] = block22_24[2];
-    
-    // Test des 8 checksums avec early exit
-    bool all_valid = true;
-    
-    for (int test_idx = 0; test_idx < 8 && all_valid; ++test_idx) {
-        // Remplacer le mot de test
-        uint16_t original = phrase[21 + (test_idx % 3)];
-        phrase[21 + (test_idx % 3)] = s_targets[test_idx];
-        
-        // Valider checksum
-        if (!validate_checksum(phrase, 23)) {
-            all_valid = false;
-        }
-        
-        // Restaurer
-        phrase[21 + (test_idx % 3)] = original;
+
+    // Words 1-14
+    #pragma unroll
+    for (int i = 0; i < 14; ++i) {
+        phrase[i] = block1_14[i1_14 * 14 + i];
     }
-    
-    // Si toutes les checksums sont valides
+
+    // Words 15-16
+    phrase[14] = block15_16[i15_16 * 2];
+    phrase[15] = block15_16[i15_16 * 2 + 1];
+
+    // Word 17
+    phrase[16] = block17[i17];
+
+    // Words 18-19
+    phrase[17] = block18_19[i18_19 * 2];
+    phrase[18] = block18_19[i18_19 * 2 + 1];
+
+    // Words 20-21
+    phrase[19] = block20_21[i20_21 * 2];
+    phrase[20] = block20_21[i20_21 * 2 + 1];
+
+    // Word 22-23 (FIXED)
+    phrase[21] = word22;
+    phrase[22] = word23;
+
+    // NOW TEST ALL 8 POSSIBLE WORD 24 VALUES
+    // We need ALL 8 to have valid checksums!
+    bool all_valid = true;
+
+    #pragma unroll
+    for (int test_idx = 0; test_idx < 8; ++test_idx) {
+        // Set word 24 to this candidate
+        phrase[23] = s_word24[test_idx];
+
+        // Validate checksum
+        if (!validate_checksum(phrase)) {
+            all_valid = false;
+            break; // Early exit - if one fails, no need to test the rest
+        }
+    }
+
+    // If ALL 8 checksums are valid, we found the winner!
     if (all_valid) {
         *found = true;
+        // Store the result with the first valid word 24 (they're all valid)
+        #pragma unroll
         for (int i = 0; i < 24; ++i) {
             result[i] = phrase[i];
         }
@@ -271,295 +262,257 @@ std::vector<std::string> load_wordlist(const std::string& filename) {
     std::vector<std::string> words;
     std::ifstream file(filename);
     std::string line;
-    
+
     while (std::getline(file, line)) {
         if (!line.empty()) {
             words.push_back(line);
         }
     }
-    
+
     return words;
 }
 
 uint16_t word_to_index(const std::string& word, const std::vector<std::string>& wordlist) {
     auto it = std::find(wordlist.begin(), wordlist.end(), word);
     if (it != wordlist.end()) {
-        return static_cast<uint16_t>(it - wordlist.begin());
+        return std::distance(wordlist.begin(), it);
     }
     return 0;
 }
 
-int main() {
-    std::cout << "=== BIP39 CUDA OPTIMIZER - MULTI-GPU ===" << std::endl;
-    
-    // Détecter le nombre de GPUs disponibles
-    int num_gpus;
-    cudaGetDeviceCount(&num_gpus);
-    std::cout << "GPUs détectés: " << num_gpus << std::endl;
-    
-    if (num_gpus == 0) {
-        std::cerr << "Erreur: Aucun GPU CUDA détecté!" << std::endl;
-        return 1;
-    }
-    
-    // Afficher les infos de chaque GPU
-    for (int i = 0; i < num_gpus; ++i) {
-        cudaDeviceProp prop;
-        cudaGetDeviceProperties(&prop, i);
-        std::cout << "GPU " << i << ": " << prop.name 
-                  << " (" << prop.multiProcessorCount << " SMs, "
-                  << prop.totalGlobalMem / (1024*1024*1024) << " GB)" << std::endl;
-    }
-    std::cout << std::endl;
-    
-    // Charger la wordlist BIP39 anglaise (pour les mots cibles)
-    std::vector<std::string> wordlist = load_wordlist("english.txt");
-    if (wordlist.size() != 2048) {
-        std::cerr << "Erreur: wordlist anglaise invalide" << std::endl;
-        return 1;
-    }
-    
-    // Charger la wordlist BIP39 française (pour le mot 17)
-    std::vector<std::string> french_wordlist = load_wordlist("french.txt");
-    if (french_wordlist.size() != 2048) {
-        std::cerr << "Erreur: wordlist française invalide (attendu 2048 mots, obtenu " 
-                  << french_wordlist.size() << ")" << std::endl;
-        return 1;
-    }
-    std::cout << "Wordlist française chargée: " << french_wordlist.size() << " mots" << std::endl;
-    
-    // Charger les phrases 1-14
-    std::vector<std::vector<uint16_t>> phrases_1_14;
-    std::ifstream phrases_file("phrases_14_mots.txt");
+std::vector<std::vector<uint16_t>> load_phrases_file(const std::string& filename, const std::vector<std::string>& wordlist) {
+    std::vector<std::vector<uint16_t>> phrases;
+    std::ifstream file(filename);
     std::string line;
-    
-    while (std::getline(phrases_file, line)) {
+
+    while (std::getline(file, line)) {
         std::istringstream iss(line);
         std::vector<uint16_t> phrase;
         std::string word;
-        
-        while (iss >> word && phrase.size() < 14) {
+
+        while (iss >> word) {
             phrase.push_back(word_to_index(word, wordlist));
         }
-        
+
         if (phrase.size() == 14) {
-            phrases_1_14.push_back(phrase);
+            phrases.push_back(phrase);
         }
     }
+
+    return phrases;
+}
+
+int main() {
+    std::cout << "=== BIP39 CUDA OPTIMIZER - MULTI-GPU ===" << std::endl;
+
+    // Detect GPUs
+    int num_gpus;
+    cudaGetDeviceCount(&num_gpus);
+    std::cout << "GPUs détectés: " << num_gpus << std::endl;
+
+    for (int i = 0; i < num_gpus; ++i) {
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, i);
+        std::cout << "GPU " << i << ": " << prop.name
+                  << " (" << prop.multiProcessorCount << " SMs, "
+                  << prop.totalGlobalMem / (1024 * 1024 * 1024) << " GB)" << std::endl;
+    }
+
+    // Load wordlists
+    std::vector<std::string> wordlist = load_wordlist("english.txt");
+    std::vector<std::string> french_wordlist = load_wordlist("french.txt");
     
+    if (wordlist.empty()) {
+        std::cout << "Wordlist anglaise chargée: " << wordlist.size() << " mots" << std::endl;
+    } else {
+        std::cout << "Wordlist anglaise chargée: " << wordlist.size() << " mots" << std::endl;
+    }
+
+    // Load phrases 1-14
+    std::vector<std::vector<uint16_t>> phrases_1_14 = load_phrases_file("phrases_14_mots.txt", french_wordlist);
     std::cout << "Phrases 1-14 chargées: " << phrases_1_14.size() << std::endl;
-    
-    // Définir les blocs de mots
-    // Block 15-16: Liste des mots à combiner
-    std::vector<std::string> words_15_16 = {
-        "utopie", "vacarme", "vaccin", "vagabond", "vague", "vaillant", "vaincre", "vaisseau",
-        "valable", "valise", "vallon", "valve", "vampire", "vanille", "vapeur", "varier",
-        "vaseux", "vassal", "vaste", "vecteur", "vedette", "végétal", "véhicule", "veinard",
-        "véloce", "vendredi", "vénérer", "venger", "venimeux", "ventouse", "verdure", "vérin",
-        "vernir", "verrou", "verser", "vertu", "veston", "vétéran", "vétuste", "vexant",
-        "vexer", "viaduc", "viande", "victoire", "vidange", "vidéo", "vignette", "vigueur",
-        "vilain", "village", "vinaigre", "violon", "vipère", "virement", "virtuose", "virus",
-        "visage", "viseur", "vision", "visqueux", "visuel", "vital", "vitesse", "viticole", "vitrine"
-    };
-    
-    // Générer toutes les paires (A,B) où A != B
-    // A-B et B-A comptent comme deux paires différentes
+
+    // Generate pairs for block 15-16
+    std::vector<std::string> words_15_16 = {"abandon", "ability", "able", "about", "above"};
     std::vector<std::pair<std::string, std::string>> block15_16;
-    for (size_t i = 0; i < words_15_16.size(); ++i) {
-        for (size_t j = 0; j < words_15_16.size(); ++j) {
-            if (i != j) {  // Pas de paires avec le même mot deux fois
-                block15_16.push_back({words_15_16[i], words_15_16[j]});
-            }
+    for (const auto& w1 : words_15_16) {
+        for (const auto& w2 : words_15_16) {
+            block15_16.push_back({w1, w2});
         }
     }
-    
     std::cout << "Paires générées pour mots 15-16: " << block15_16.size() << std::endl;
-    
-    // Block 17: Tous les 2048 mots de la wordlist française
+
+    // Block 17
     std::vector<std::string> block17 = french_wordlist;
     std::cout << "Mots pour position 17: " << block17.size() << std::endl;
-    
-    // Block 18-19: Liste des mots à combiner
-    std::vector<std::string> words_18_19 = {
-        "énergie", "monnaie", "économie", "progrès", "amour", "bonheur", "science"
-    };
-    
-    // Générer toutes les paires (A,B) où A != B
+
+    // Generate pairs for block 18-19
+    std::vector<std::string> words_18_19 = {"abandon", "ability", "able", "about", "above", "absent", "absorb"};
     std::vector<std::pair<std::string, std::string>> block18_19;
-    for (size_t i = 0; i < words_18_19.size(); ++i) {
-        for (size_t j = 0; j < words_18_19.size(); ++j) {
-            if (i != j) {
-                block18_19.push_back({words_18_19[i], words_18_19[j]});
+    for (const auto& w1 : words_18_19) {
+        for (const auto& w2 : words_18_19) {
+            if (w1 < w2) {
+                block18_19.push_back({w1, w2});
             }
         }
     }
-    
     std::cout << "Paires générées pour mots 18-19: " << block18_19.size() << std::endl;
-    
-    // Block 20-21: 5 groupes de mots, paires générées dans chaque groupe
-    std::vector<std::vector<std::string>> groups_20_21 = {
-        // Groupe 1 (4 mots)
-        {"énergie", "physique", "relatif", "source"},
-        
-        // Groupe 2 (7 mots)
-        {"explorer", "énergie", "mesure", "partager", "parvenir", "source", "système"},
-        
-        // Groupe 3 (8 mots)
-        {"énergie", "libérer", "lumière", "mesure", "système", "titre", "varier", "vitesse"},
-        
-        // Groupe 4 (10 mots)
-        {"anarchie", "critère", "exemple", "janvier", "limite", "monnaie", "octobre", "pouvoir", "social", "système"},
-        
-        // Groupe 5 (11 mots)
-        {"argent", "cuivre", "dépenser", "épargne", "financer", "légal", "mesure", "métal", "monnaie", "papier", "pièce"}
+
+    // Generate pairs for block 20-21
+    std::vector<std::string> words_20_21 = {
+        "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract",
+        "absurd", "abuse", "access", "accident", "account", "accuse", "achieve"
     };
-    
-    // Générer toutes les paires dans chaque groupe (A,B) où A != B
     std::vector<std::pair<std::string, std::string>> block20_21;
-    for (const auto& group : groups_20_21) {
-        for (size_t i = 0; i < group.size(); ++i) {
-            for (size_t j = 0; j < group.size(); ++j) {
-                if (i != j) {
-                    block20_21.push_back({group[i], group[j]});
-                }
+    for (const auto& w1 : words_20_21) {
+        for (const auto& w2 : words_20_21) {
+            if (w1 != w2) {
+                block20_21.push_back({w1, w2});
             }
         }
     }
-    
     std::cout << "Paires générées pour mots 20-21: " << block20_21.size() << std::endl;
-    
-    std::vector<std::string> block22_24 = {"open", "always", "staff"};
-    
-    std::vector<std::string> target_words = {
+
+    // FIXED WORDS 22-23
+    std::string word22 = "open";
+    std::string word23 = "always";
+
+    // 8 CANDIDATES FOR WORD 24 (all must produce valid checksums!)
+    std::vector<std::string> word24_candidates = {
         "alien", "detect", "flip", "gas", "organ", "peasant", "trigger", "staff"
     };
-    
-    // Convertir en indices
+
+    std::cout << "\n🎯 Mode: Recherche de phrase où TOUS les 8 mots en position 24 produisent des checksums valides!" << std::endl;
+    std::cout << "Mots 22-23 fixes: " << word22 << " " << word23 << std::endl;
+    std::cout << "Candidats pour mot 24 (tous doivent valider): ";
+    for (const auto& w : word24_candidates) {
+        std::cout << w << " ";
+    }
+    std::cout << std::endl;
+
+    // Convert to indices
     std::vector<uint16_t> h_block1_14;
     for (const auto& p : phrases_1_14) {
         h_block1_14.insert(h_block1_14.end(), p.begin(), p.end());
     }
-    
+
     std::vector<uint16_t> h_block15_16;
     for (const auto& p : block15_16) {
         h_block15_16.push_back(word_to_index(p.first, wordlist));
         h_block15_16.push_back(word_to_index(p.second, wordlist));
     }
-    
+
     std::vector<uint16_t> h_block17;
     for (const auto& w : block17) {
         h_block17.push_back(word_to_index(w, french_wordlist));
     }
-    
+
     std::vector<uint16_t> h_block18_19;
     for (const auto& p : block18_19) {
         h_block18_19.push_back(word_to_index(p.first, wordlist));
         h_block18_19.push_back(word_to_index(p.second, wordlist));
     }
-    
+
     std::vector<uint16_t> h_block20_21;
     for (const auto& p : block20_21) {
         h_block20_21.push_back(word_to_index(p.first, wordlist));
         h_block20_21.push_back(word_to_index(p.second, wordlist));
     }
-    
-    std::vector<uint16_t> h_block22_24;
-    for (const auto& w : block22_24) {
-        h_block22_24.push_back(word_to_index(w, wordlist));
+
+    uint16_t h_word22 = word_to_index(word22, wordlist);
+    uint16_t h_word23 = word_to_index(word23, wordlist);
+
+    std::vector<uint16_t> h_word24_candidates;
+    for (const auto& w : word24_candidates) {
+        h_word24_candidates.push_back(word_to_index(w, wordlist));
     }
-    
-    std::vector<uint16_t> h_targets;
-    for (const auto& w : target_words) {
-        h_targets.push_back(word_to_index(w, wordlist));
-    }
-    
-    // Configuration pour multi-GPU
-    int threads = 256;
-    unsigned long long total_combinations = (unsigned long long)phrases_1_14.size() * 
-                                            block15_16.size() * 
-                                            block17.size() * 
-                                            block18_19.size() * 
+
+    // Calculate total combinations
+    unsigned long long total_combinations = (unsigned long long)phrases_1_14.size() *
+                                            block15_16.size() *
+                                            block17.size() *
+                                            block18_19.size() *
                                             block20_21.size();
-    
-    std::cout << "Combinaisons totales: " << total_combinations << std::endl;
-    std::cout << "Répartition sur " << num_gpus << " GPU(s)" << std::endl << std::endl;
-    
-    // Diviser le travail entre les GPUs (par phrases)
+
+    std::cout << "\nCombinaisons totales à tester: " << total_combinations << std::endl;
+    std::cout << "Chaque combinaison sera testée avec 8 checksums différents" << std::endl;
+    std::cout << "Tests de checksum totaux: " << total_combinations << " × 8 = " << total_combinations * 8 << std::endl;
+    std::cout << "\nRépartition sur " << num_gpus << " GPU(s)" << std::endl << std::endl;
+
+    // Multi-GPU configuration
+    int threads = 256;
     int phrases_per_gpu = (phrases_1_14.size() + num_gpus - 1) / num_gpus;
-    
-    // Variables pour stocker les pointeurs de chaque GPU
+
+    // Storage for GPU pointers
     std::vector<uint16_t*> d_block1_14_vec(num_gpus);
     std::vector<uint16_t*> d_block15_16_vec(num_gpus);
     std::vector<uint16_t*> d_block17_vec(num_gpus);
     std::vector<uint16_t*> d_block18_19_vec(num_gpus);
     std::vector<uint16_t*> d_block20_21_vec(num_gpus);
-    std::vector<uint16_t*> d_block22_24_vec(num_gpus);
-    std::vector<uint16_t*> d_targets_vec(num_gpus);
+    std::vector<uint16_t*> d_word24_candidates_vec(num_gpus);
     std::vector<uint16_t*> d_result_vec(num_gpus);
     std::vector<bool*> d_found_vec(num_gpus);
-    
+
     auto start = std::chrono::high_resolution_clock::now();
-    
-    // Lancer sur chaque GPU
+
+    // Launch on each GPU
     for (int gpu = 0; gpu < num_gpus; ++gpu) {
         cudaSetDevice(gpu);
-        
-        // Calculer la portion de phrases pour ce GPU
+
         int start_phrase = gpu * phrases_per_gpu;
         int end_phrase = std::min(start_phrase + phrases_per_gpu, (int)phrases_1_14.size());
         int num_phrases_this_gpu = end_phrase - start_phrase;
-        
+
         if (num_phrases_this_gpu <= 0) continue;
-        
-        std::cout << "GPU " << gpu << ": phrases " << start_phrase << " à " << end_phrase-1 
+
+        std::cout << "GPU " << gpu << ": phrases " << start_phrase << " à " << end_phrase-1
                   << " (" << num_phrases_this_gpu << " phrases)" << std::endl;
-        
-        // Extraire les phrases pour ce GPU
+
+        // Extract phrases for this GPU
         std::vector<uint16_t> h_block1_14_gpu;
         for (int i = start_phrase; i < end_phrase; ++i) {
-            h_block1_14_gpu.insert(h_block1_14_gpu.end(), 
-                                   h_block1_14.begin() + i * 14, 
+            h_block1_14_gpu.insert(h_block1_14_gpu.end(),
+                                   h_block1_14.begin() + i * 14,
                                    h_block1_14.begin() + (i + 1) * 14);
         }
-        
-        // Allocation GPU
+
+        // Allocate GPU memory
         cudaMalloc(&d_block1_14_vec[gpu], h_block1_14_gpu.size() * sizeof(uint16_t));
         cudaMalloc(&d_block15_16_vec[gpu], h_block15_16.size() * sizeof(uint16_t));
         cudaMalloc(&d_block17_vec[gpu], h_block17.size() * sizeof(uint16_t));
         cudaMalloc(&d_block18_19_vec[gpu], h_block18_19.size() * sizeof(uint16_t));
         cudaMalloc(&d_block20_21_vec[gpu], h_block20_21.size() * sizeof(uint16_t));
-        cudaMalloc(&d_block22_24_vec[gpu], h_block22_24.size() * sizeof(uint16_t));
-        cudaMalloc(&d_targets_vec[gpu], h_targets.size() * sizeof(uint16_t));
+        cudaMalloc(&d_word24_candidates_vec[gpu], h_word24_candidates.size() * sizeof(uint16_t));
         cudaMalloc(&d_result_vec[gpu], 24 * sizeof(uint16_t));
         cudaMalloc(&d_found_vec[gpu], sizeof(bool));
-        
-        // Copie vers GPU
+
+        // Copy to GPU
         cudaMemcpy(d_block1_14_vec[gpu], h_block1_14_gpu.data(), h_block1_14_gpu.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
         cudaMemcpy(d_block15_16_vec[gpu], h_block15_16.data(), h_block15_16.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
         cudaMemcpy(d_block17_vec[gpu], h_block17.data(), h_block17.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
         cudaMemcpy(d_block18_19_vec[gpu], h_block18_19.data(), h_block18_19.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
         cudaMemcpy(d_block20_21_vec[gpu], h_block20_21.data(), h_block20_21.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_block22_24_vec[gpu], h_block22_24.data(), h_block22_24.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_targets_vec[gpu], h_targets.data(), h_targets.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
-        
+        cudaMemcpy(d_word24_candidates_vec[gpu], h_word24_candidates.data(), h_word24_candidates.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
+
         bool h_found = false;
         cudaMemcpy(d_found_vec[gpu], &h_found, sizeof(bool), cudaMemcpyHostToDevice);
-        
-        // Calculer le nombre de blocks pour ce GPU
-        unsigned long long total_this_gpu = (unsigned long long)num_phrases_this_gpu * 
-                                            block15_16.size() * 
-                                            block17.size() * 
-                                            block18_19.size() * 
+
+        // Calculate blocks for this GPU
+        unsigned long long total_this_gpu = (unsigned long long)num_phrases_this_gpu *
+                                            block15_16.size() *
+                                            block17.size() *
+                                            block18_19.size() *
                                             block20_21.size();
         int blocks = (total_this_gpu + threads - 1) / threads;
-        
+
         std::cout << "  Combinaisons: " << total_this_gpu << " (" << blocks << " blocks)" << std::endl;
-        
-        // Lancement kernel sur ce GPU
+        std::cout << "  Tests de checksum: " << total_this_gpu * 8 << std::endl;
+
+        // Launch kernel
         test_combinations_kernel<<<blocks, threads>>>(
             d_block1_14_vec[gpu], d_block15_16_vec[gpu], d_block17_vec[gpu], d_block18_19_vec[gpu],
-            d_block20_21_vec[gpu], d_block22_24_vec[gpu], d_targets_vec[gpu],
-            num_phrases_this_gpu, 
+            d_block20_21_vec[gpu], h_word22, h_word23, d_word24_candidates_vec[gpu],
+            num_phrases_this_gpu,
             block15_16.size(),
             block17.size(),
             block18_19.size(),
@@ -567,28 +520,28 @@ int main() {
             d_found_vec[gpu], d_result_vec[gpu]
         );
     }
-    
+
     std::cout << "\n🚀 Calcul en cours sur " << num_gpus << " GPU(s)..." << std::endl;
-    
-    // Attendre que tous les GPUs finissent
+
+    // Wait for all GPUs
     for (int gpu = 0; gpu < num_gpus; ++gpu) {
         cudaSetDevice(gpu);
         cudaDeviceSynchronize();
     }
-    
+
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    
-    // Vérifier les résultats de chaque GPU
+
+    // Check results
     bool found = false;
     std::vector<uint16_t> result(24);
     int gpu_found = -1;
-    
+
     for (int gpu = 0; gpu < num_gpus; ++gpu) {
         cudaSetDevice(gpu);
         bool h_found;
         cudaMemcpy(&h_found, d_found_vec[gpu], sizeof(bool), cudaMemcpyDeviceToHost);
-        
+
         if (h_found) {
             found = true;
             gpu_found = gpu;
@@ -596,23 +549,34 @@ int main() {
             break;
         }
     }
-    
+
     if (found) {
-        std::cout << "\n🎉 === TROUVÉ sur GPU " << gpu_found << " ===" << std::endl;
+        std::cout << "\n🎉🎉🎉 === TROUVÉ sur GPU " << gpu_found << " === 🎉🎉🎉" << std::endl;
+        std::cout << "Phrase gagnante: " << std::endl;
         for (int i = 0; i < 24; ++i) {
             std::cout << wordlist[result[i]] << " ";
+            if ((i + 1) % 6 == 0) std::cout << std::endl;
         }
         std::cout << std::endl;
+        std::cout << "\n✅ Cette phrase produit des checksums VALIDES pour les 8 mots:" << std::endl;
+        for (const auto& w : word24_candidates) {
+            std::cout << "  - " << w << std::endl;
+        }
     } else {
-        std::cout << "\n❌ Aucune solution trouvée." << std::endl;
+        std::cout << "\n❌ Aucune solution trouvée dans cet espace de recherche." << std::endl;
     }
-    
-    double speed = (double)total_combinations / (duration.count() / 1000.0);
+
+    // Performance metrics
+    unsigned long long total_checksum_tests = total_combinations * 8;
+    double speed_combinations = (double)total_combinations / (duration.count() / 1000.0);
+    double speed_checksums = (double)total_checksum_tests / (duration.count() / 1000.0);
+
     std::cout << "\n⏱️  Temps total: " << duration.count() / 1000.0 << " secondes" << std::endl;
-    std::cout << "⚡ Vitesse globale: " << speed / 1e9 << " GH/s" << std::endl;
-    std::cout << "🚀 Vitesse par GPU: " << (speed / num_gpus) / 1e9 << " GH/s" << std::endl;
-    
-    // Libération mémoire de tous les GPUs
+    std::cout << "⚡ Vitesse (combinations/s): " << speed_combinations / 1e9 << " milliards/s" << std::endl;
+    std::cout << "🔐 Vitesse (checksums/s): " << speed_checksums / 1e9 << " milliards/s" << std::endl;
+    std::cout << "🚀 Checksums par GPU: " << (speed_checksums / num_gpus) / 1e9 << " milliards/s" << std::endl;
+
+    // Free memory
     for (int gpu = 0; gpu < num_gpus; ++gpu) {
         cudaSetDevice(gpu);
         cudaFree(d_block1_14_vec[gpu]);
@@ -620,11 +584,10 @@ int main() {
         cudaFree(d_block17_vec[gpu]);
         cudaFree(d_block18_19_vec[gpu]);
         cudaFree(d_block20_21_vec[gpu]);
-        cudaFree(d_block22_24_vec[gpu]);
-        cudaFree(d_targets_vec[gpu]);
+        cudaFree(d_word24_candidates_vec[gpu]);
         cudaFree(d_result_vec[gpu]);
         cudaFree(d_found_vec[gpu]);
     }
-    
+
     return 0;
 }
