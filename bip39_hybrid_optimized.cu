@@ -163,7 +163,8 @@ __global__ void test_combinations_kernel(
     int num_block18_19,
     int num_block20_21,
     bool* found,
-    uint16_t* result
+    uint16_t* result,
+    unsigned long long* checksum_counter  // ADDED: counter for actual checksums computed
 ) {
     // Shared memory for word 24 candidates (optimization)
     __shared__ uint16_t s_word24[8];
@@ -237,6 +238,7 @@ __global__ void test_combinations_kernel(
         phrase[23] = s_word24[test_idx];
 
         // Validate checksum
+        atomicAdd(checksum_counter, 1ULL);  // ADDED: Count each checksum
         if (!validate_checksum(phrase)) {
             all_valid = false;
             break; // Early exit - if one fails, no need to test the rest
@@ -489,9 +491,7 @@ std::string word23 = "always";
                                             block18_19.size() *
                                             block20_21.size();
 
-    std::cout << "\nCombinaisons totales à tester: " << total_combinations << std::endl;
-    std::cout << "Chaque combinaison sera testée avec 8 checksums différents" << std::endl;
-    std::cout << "Tests de checksum totaux: " << total_combinations << " × 8 = " << total_combinations * 8 << std::endl;
+    std::cout << "\n📊 Combinaisons de phrases à tester: " << total_combinations << std::endl;
     std::cout << "\nRépartition sur " << num_gpus << " GPU(s)" << std::endl << std::endl;
 
     // Multi-GPU configuration
@@ -507,6 +507,7 @@ std::string word23 = "always";
     std::vector<uint16_t*> d_word24_candidates_vec(num_gpus);
     std::vector<uint16_t*> d_result_vec(num_gpus);
     std::vector<bool*> d_found_vec(num_gpus);
+    std::vector<unsigned long long*> d_counter_vec(num_gpus);  // ADDED: counter
 
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -520,8 +521,8 @@ std::string word23 = "always";
 
         if (num_phrases_this_gpu <= 0) continue;
 
-        std::cout << "GPU " << gpu << ": phrases " << start_phrase << " à " << end_phrase-1
-                  << " (" << num_phrases_this_gpu << " phrases)" << std::endl;
+        std::cout << "GPU " << gpu << ": " << num_phrases_this_gpu << " phrases, " 
+                  << total_this_gpu << " combinaisons" << std::endl;
 
         // Extract phrases for this GPU
         std::vector<uint16_t> h_block1_14_gpu;
@@ -540,6 +541,7 @@ std::string word23 = "always";
         cudaMalloc(&d_word24_candidates_vec[gpu], h_word24_candidates.size() * sizeof(uint16_t));
         cudaMalloc(&d_result_vec[gpu], 24 * sizeof(uint16_t));
         cudaMalloc(&d_found_vec[gpu], sizeof(bool));
+        cudaMalloc(&d_counter_vec[gpu], sizeof(unsigned long long));  // ADDED
 
         // Copy to GPU
         cudaMemcpy(d_block1_14_vec[gpu], h_block1_14_gpu.data(), h_block1_14_gpu.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
@@ -552,6 +554,9 @@ std::string word23 = "always";
         bool h_found = false;
         cudaMemcpy(d_found_vec[gpu], &h_found, sizeof(bool), cudaMemcpyHostToDevice);
 
+        unsigned long long h_counter = 0;  // ADDED
+        cudaMemcpy(d_counter_vec[gpu], &h_counter, sizeof(unsigned long long), cudaMemcpyHostToDevice);  // ADDED
+
         // Calculate blocks for this GPU
         unsigned long long total_this_gpu = (unsigned long long)num_phrases_this_gpu *
                                             block15_16.size() *
@@ -559,9 +564,6 @@ std::string word23 = "always";
                                             block18_19.size() *
                                             block20_21.size();
         int blocks = (total_this_gpu + threads - 1) / threads;
-
-        std::cout << "  Combinaisons: " << total_this_gpu << " (" << blocks << " blocks)" << std::endl;
-        std::cout << "  Tests de checksum: " << total_this_gpu * 8 << std::endl;
 
         // Launch kernel
         test_combinations_kernel<<<blocks, threads>>>(
@@ -572,7 +574,7 @@ std::string word23 = "always";
             block17.size(),
             block18_19.size(),
             block20_21.size(),
-            d_found_vec[gpu], d_result_vec[gpu]
+            d_found_vec[gpu], d_result_vec[gpu], d_counter_vec[gpu]  // ADDED counter
         );
     }
 
@@ -587,15 +589,21 @@ std::string word23 = "always";
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
-    // Check results
+    // Check results and counters
     bool found = false;
     std::vector<uint16_t> result(24);
     int gpu_found = -1;
+    unsigned long long total_checksums_computed = 0;  // ADDED
 
     for (int gpu = 0; gpu < num_gpus; ++gpu) {
         cudaSetDevice(gpu);
         bool h_found;
         cudaMemcpy(&h_found, d_found_vec[gpu], sizeof(bool), cudaMemcpyDeviceToHost);
+
+        // ADDED: Read counter from this GPU
+        unsigned long long h_counter;
+        cudaMemcpy(&h_counter, d_counter_vec[gpu], sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+        total_checksums_computed += h_counter;
 
         if (h_found) {
             found = true;
@@ -625,11 +633,18 @@ std::string word23 = "always";
     unsigned long long total_checksum_tests = total_combinations * 8;
     double speed_combinations = (double)total_combinations / (duration.count() / 1000.0);
     double speed_checksums = (double)total_checksum_tests / (duration.count() / 1000.0);
+    
+    // ADDED: Real speed based on actual computed checksums
+    double real_speed_checksums = (double)total_checksums_computed / (duration.count() / 1000.0);
 
     std::cout << "\n⏱️  Temps total: " << duration.count() / 1000.0 << " secondes" << std::endl;
-    std::cout << "⚡ Vitesse (combinations/s): " << speed_combinations / 1e9 << " milliards/s" << std::endl;
-    std::cout << "🔐 Vitesse (checksums/s): " << speed_checksums / 1e9 << " milliards/s" << std::endl;
-    std::cout << "🚀 Checksums par GPU: " << (speed_checksums / num_gpus) / 1e9 << " milliards/s" << std::endl;
+    std::cout << "\n📊 STATISTIQUES:" << std::endl;
+    std::cout << "   Combinaisons testées: " << total_combinations << std::endl;
+    std::cout << "   Checksums calculés: " << total_checksums_computed << std::endl;
+    std::cout << "   Moyenne par combinaison: " << (double)total_checksums_computed / total_combinations << std::endl;
+    std::cout << "\n🚀 PERFORMANCES:" << std::endl;
+    std::cout << "   Vitesse: " << real_speed_checksums / 1e6 << " M checksums/s" << std::endl;
+    std::cout << "   Par GPU: " << (real_speed_checksums / num_gpus) / 1e6 << " M checksums/s" << std::endl;
 
     // Free memory
     for (int gpu = 0; gpu < num_gpus; ++gpu) {
@@ -642,6 +657,7 @@ std::string word23 = "always";
         cudaFree(d_word24_candidates_vec[gpu]);
         cudaFree(d_result_vec[gpu]);
         cudaFree(d_found_vec[gpu]);
+        cudaFree(d_counter_vec[gpu]);  // ADDED
     }
 
     return 0;
