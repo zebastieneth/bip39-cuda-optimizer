@@ -321,65 +321,120 @@ int main() {
     // Load wordlists
     std::vector<std::string> wordlist = load_wordlist("english.txt");
     std::vector<std::string> french_wordlist = load_wordlist("french.txt");
-    
+
     if (wordlist.empty()) {
         std::cout << "Wordlist anglaise chargée: " << wordlist.size() << " mots" << std::endl;
     } else {
         std::cout << "Wordlist anglaise chargée: " << wordlist.size() << " mots" << std::endl;
     }
 
-    // Load phrases 1-14
-    std::vector<std::vector<uint16_t>> phrases_1_14 = load_phrases_file("phrases_14_mots.txt", french_wordlist);
-    std::cout << "Phrases 1-14 chargées: " << phrases_1_14.size() << std::endl;
+    // Load phrases 1-14 (mots français, indices français)
+std::vector<std::vector<uint16_t>> phrases_1_14 = load_phrases_file("phrases_14_mots.txt", french_wordlist);
+std::cout << "Phrases 1-14 chargées: " << phrases_1_14.size() << std::endl;
 
-    // Generate pairs for block 15-16
-    std::vector<std::string> words_15_16 = {"abandon", "ability", "able", "about", "above"};
-    std::vector<std::pair<std::string, std::string>> block15_16;
-    for (const auto& w1 : words_15_16) {
-        for (const auto& w2 : words_15_16) {
+// BLOC 15-16: Toutes les paires A-B et B-A (pas AA ou BB)
+std::vector<std::string> words_15_16 = {
+    "utopie", "vacarme", "vaccin", "vagabond", "vague", "vaillant", "vaincre", "vaisseau",
+    "valable", "valise", "vallon", "valve", "vampire", "vanille", "vapeur", "varier",
+    "vaseux", "vassal", "vaste", "vecteur", "vedette", "végétal", "véhicule", "veinard",
+    "véloce", "vendredi", "vénérer", "venger", "venimeux", "ventouse", "verdure", "vérin",
+    "vernir", "verrou", "verser", "vertu", "veston", "vétéran", "vétuste", "vexant",
+    "vexer", "viaduc", "viande", "victoire", "vidange", "vidéo", "vignette", "vigueur",
+    "vilain", "village", "vinaigre", "violon", "vipère", "virement", "virtuose", "virus",
+    "visage", "viseur", "vision", "visqueux", "visuel", "vital", "vitesse", "viticole", "vitrine"
+};
+
+std::vector<std::pair<std::string, std::string>> block15_16;
+for (const auto& w1 : words_15_16) {
+    for (const auto& w2 : words_15_16) {
+        if (w1 != w2) {
             block15_16.push_back({w1, w2});
         }
     }
-    std::cout << "Paires générées pour mots 15-16: " << block15_16.size() << std::endl;
+}
+std::cout << "Paires générées pour mots 15-16: " << block15_16.size() << std::endl;
 
-    // Block 17
-    std::vector<std::string> block17 = french_wordlist;
-    std::cout << "Mots pour position 17: " << block17.size() << std::endl;
+// BLOC 17: Tous les 2048 mots de la wordlist française
+std::vector<std::string> block17 = french_wordlist;
+std::cout << "Mots pour position 17: " << block17.size() << std::endl;
 
-    // Generate pairs for block 18-19
-    std::vector<std::string> words_18_19 = {"abandon", "ability", "able", "about", "above", "absent", "absorb"};
-    std::vector<std::pair<std::string, std::string>> block18_19;
-    for (const auto& w1 : words_18_19) {
-        for (const auto& w2 : words_18_19) {
-            if (w1 < w2) {
-                block18_19.push_back({w1, w2});
-            }
+// BLOC 18-19: Toutes les paires A-B et B-A (pas AA ou BB)
+std::vector<std::string> words_18_19 = {
+    "énergie", "monnaie", "économie", "progrès", "amour", "bonheur", "science"
+};
+
+std::vector<std::pair<std::string, std::string>> block18_19;
+for (const auto& w1 : words_18_19) {
+    for (const auto& w2 : words_18_19) {
+        if (w1 != w2) {
+            block18_19.push_back({w1, w2});
         }
     }
-    std::cout << "Paires générées pour mots 18-19: " << block18_19.size() << std::endl;
+}
+std::cout << "Paires générées pour mots 18-19: " << block18_19.size() << std::endl;
 
-    // Generate pairs for block 20-21
-    std::vector<std::string> words_20_21 = {
-        "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract",
-        "absurd", "abuse", "access", "accident", "account", "accuse", "achieve"
-    };
-    std::vector<std::pair<std::string, std::string>> block20_21;
-    for (const auto& w1 : words_20_21) {
-        for (const auto& w2 : words_20_21) {
-            if (w1 != w2) {
-                block20_21.push_back({w1, w2});
-            }
+// BLOC 20-21: Paires au sein de chaque groupe
+std::vector<std::pair<std::string, std::string>> block20_21;
+
+// Groupe 1
+std::vector<std::string> groupe_1 = {"énergie", "physique", "relatif", "source"};
+for (const auto& w1 : groupe_1) {
+    for (const auto& w2 : groupe_1) {
+        if (w1 != w2) {
+            block20_21.push_back({w1, w2});
         }
     }
-    std::cout << "Paires générées pour mots 20-21: " << block20_21.size() << std::endl;
+}
 
-    // FIXED WORDS 22-23
-    std::string word22 = "open";
-    std::string word23 = "always";
+// Groupe 2
+std::vector<std::string> groupe_2 = {"explorer", "énergie", "mesure", "partager", "parvenir", "source", "système"};
+for (const auto& w1 : groupe_2) {
+    for (const auto& w2 : groupe_2) {
+        if (w1 != w2) {
+            block20_21.push_back({w1, w2});
+        }
+    }
+}
 
-    // 8 CANDIDATES FOR WORD 24 (all must produce valid checksums!)
+// Groupe 3
+std::vector<std::string> groupe_3 = {"énergie", "libérer", "lumière", "mesure", "système", "titre", "varier", "vitesse"};
+for (const auto& w1 : groupe_3) {
+    for (const auto& w2 : groupe_3) {
+        if (w1 != w2) {
+            block20_21.push_back({w1, w2});
+        }
+    }
+}
+
+// Groupe 4
+std::vector<std::string> groupe_4 = {"anarchie", "critère", "exemple", "janvier", "limite", "monnaie", "octobre", "pouvoir", "social", "système"};
+for (const auto& w1 : groupe_4) {
+    for (const auto& w2 : groupe_4) {
+        if (w1 != w2) {
+            block20_21.push_back({w1, w2});
+        }
+    }
+}
+
+// Groupe 5
+std::vector<std::string> groupe_5 = {"argent", "cuivre", "dépenser", "épargne", "financer", "légal", "mesure", "métal", "monnaie", "papier", "pièce", "précieux", "social", "usage"};
+for (const auto& w1 : groupe_5) {
+    for (const auto& w2 : groupe_5) {
+        if (w1 != w2) {
+            block20_21.push_back({w1, w2});
+        }
+    }
+}
+
+std::cout << "Paires générées pour mots 20-21: " << block20_21.size() << std::endl;
+
+// MOTS 22-23 (fixes)
+std::string word22 = "open";
+std::string word23 = "always";
+
+// 8 CANDIDATES FOR WORD 24 (all must produce valid checksums!)
     std::vector<std::string> word24_candidates = {
-        "alien", "detect", "flip", "gas", "organ", "peasant", "trigger", "staff"
+        "alien", "detect", "flip", "gas", "organ", "peasant", "staff", "trigger"
     };
 
     std::cout << "\n🎯 Mode: Recherche de phrase où TOUS les 8 mots en position 24 produisent des checksums valides!" << std::endl;
@@ -398,25 +453,25 @@ int main() {
 
     std::vector<uint16_t> h_block15_16;
     for (const auto& p : block15_16) {
-        h_block15_16.push_back(word_to_index(p.first, wordlist));
-        h_block15_16.push_back(word_to_index(p.second, wordlist));
+        h_block15_16.push_back(word_to_index(p.first, french_wordlist));
+        h_block15_16.push_back(word_to_index(p.second, french_wordlist));
     }
 
     std::vector<uint16_t> h_block17;
     for (const auto& w : block17) {
-        h_block17.push_back(word_to_index(w, french_wordlist));
+        h_block17.push_back(word_to_index(w, wordlist));
     }
 
     std::vector<uint16_t> h_block18_19;
     for (const auto& p : block18_19) {
-        h_block18_19.push_back(word_to_index(p.first, wordlist));
-        h_block18_19.push_back(word_to_index(p.second, wordlist));
+        h_block18_19.push_back(word_to_index(p.first, french_wordlist));
+        h_block18_19.push_back(word_to_index(p.second, french_wordlist));
     }
 
     std::vector<uint16_t> h_block20_21;
     for (const auto& p : block20_21) {
-        h_block20_21.push_back(word_to_index(p.first, wordlist));
-        h_block20_21.push_back(word_to_index(p.second, wordlist));
+        h_block20_21.push_back(word_to_index(p.first, french_wordlist));
+        h_block20_21.push_back(word_to_index(p.second, french_wordlist));
     }
 
     uint16_t h_word22 = word_to_index(word22, wordlist);
