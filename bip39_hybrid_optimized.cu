@@ -461,7 +461,7 @@ std::string word23 = "always";
 
     std::vector<uint16_t> h_block17;
     for (const auto& w : block17) {
-        h_block17.push_back(word_to_index(w, wordlist));
+        h_block17.push_back(word_to_index(w, french_wordlist));
     }
 
     std::vector<uint16_t> h_block18_19;
