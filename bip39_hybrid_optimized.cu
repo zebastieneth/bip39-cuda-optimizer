@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <chrono>
 #include <cstring>
+#include <iomanip>
 
 // ============================================================================
 // SHA256 CONSTANTS AND MACROS
@@ -164,7 +165,8 @@ __global__ void test_combinations_kernel(
     int num_block20_21,
     bool* found,
     uint16_t* result,
-    unsigned long long* checksum_counter  // ADDED: counter for actual checksums computed
+    unsigned long long* checksum_counter,  // counter for actual checksums computed
+    unsigned long long batch_offset  // offset for batching
 ) {
     // Shared memory for word 24 candidates (optimization)
     __shared__ uint16_t s_word24[8];
@@ -173,8 +175,8 @@ __global__ void test_combinations_kernel(
     }
     __syncthreads();
 
-    // Calculate global index
-    unsigned long long idx = blockIdx.x * blockDim.x + threadIdx.x;
+    // Calculate global index with batch offset
+    unsigned long long idx = batch_offset + (unsigned long long)blockIdx.x * blockDim.x + threadIdx.x;
 
     // Early exit if already found
     if (*found) return;
@@ -512,25 +514,28 @@ std::string word23 = "always";
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    // Launch on each GPU
+    // Calculate combinations per GPU and allocate memory
+    std::vector<unsigned long long> total_per_gpu(num_gpus);
+    std::vector<int> num_phrases_per_gpu(num_gpus);
+
     for (int gpu = 0; gpu < num_gpus; ++gpu) {
         cudaSetDevice(gpu);
 
         int start_phrase = gpu * phrases_per_gpu;
         int end_phrase = std::min(start_phrase + phrases_per_gpu, (int)phrases_1_14.size());
-        int num_phrases_this_gpu = end_phrase - start_phrase;
+        num_phrases_per_gpu[gpu] = end_phrase - start_phrase;
 
-        if (num_phrases_this_gpu <= 0) continue;
+        if (num_phrases_per_gpu[gpu] <= 0) continue;
 
         // Calculate total combinations for this GPU
-        unsigned long long total_this_gpu = (unsigned long long)num_phrases_this_gpu *
-                                            block15_16.size() *
-                                            block17.size() *
-                                            block18_19.size() *
-                                            block20_21.size();
+        total_per_gpu[gpu] = (unsigned long long)num_phrases_per_gpu[gpu] *
+                             block15_16.size() *
+                             block17.size() *
+                             block18_19.size() *
+                             block20_21.size();
 
-        std::cout << "GPU " << gpu << ": " << num_phrases_this_gpu << " phrases, "
-                  << total_this_gpu << " combinaisons" << std::endl;
+        std::cout << "GPU " << gpu << ": " << num_phrases_per_gpu[gpu] << " phrases, "
+                  << total_per_gpu[gpu] << " combinaisons" << std::endl;
 
         // Extract phrases for this GPU
         std::vector<uint16_t> h_block1_14_gpu;
@@ -549,7 +554,7 @@ std::string word23 = "always";
         cudaMalloc(&d_word24_candidates_vec[gpu], h_word24_candidates.size() * sizeof(uint16_t));
         cudaMalloc(&d_result_vec[gpu], 24 * sizeof(uint16_t));
         cudaMalloc(&d_found_vec[gpu], sizeof(bool));
-        cudaMalloc(&d_counter_vec[gpu], sizeof(unsigned long long));  // ADDED
+        cudaMalloc(&d_counter_vec[gpu], sizeof(unsigned long long));
 
         // Copy to GPU
         cudaMemcpy(d_block1_14_vec[gpu], h_block1_14_gpu.data(), h_block1_14_gpu.size() * sizeof(uint16_t), cudaMemcpyHostToDevice);
@@ -562,58 +567,85 @@ std::string word23 = "always";
         bool h_found = false;
         cudaMemcpy(d_found_vec[gpu], &h_found, sizeof(bool), cudaMemcpyHostToDevice);
 
-        unsigned long long h_counter = 0;  // ADDED
-        cudaMemcpy(d_counter_vec[gpu], &h_counter, sizeof(unsigned long long), cudaMemcpyHostToDevice);  // ADDED
-
-        // Calculate blocks for this GPU
-        int blocks = (total_this_gpu + threads - 1) / threads;
-
-        // Launch kernel
-        test_combinations_kernel<<<blocks, threads>>>(
-            d_block1_14_vec[gpu], d_block15_16_vec[gpu], d_block17_vec[gpu], d_block18_19_vec[gpu],
-            d_block20_21_vec[gpu], h_word22, h_word23, d_word24_candidates_vec[gpu],
-            num_phrases_this_gpu,
-            block15_16.size(),
-            block17.size(),
-            block18_19.size(),
-            block20_21.size(),
-            d_found_vec[gpu], d_result_vec[gpu], d_counter_vec[gpu]  // ADDED counter
-        );
+        unsigned long long h_counter = 0;
+        cudaMemcpy(d_counter_vec[gpu], &h_counter, sizeof(unsigned long long), cudaMemcpyHostToDevice);
     }
 
     std::cout << "\n🚀 Calcul en cours sur " << num_gpus << " GPU(s)..." << std::endl;
 
-    // Wait for all GPUs
-    for (int gpu = 0; gpu < num_gpus; ++gpu) {
+    // Batching parameters - max blocks per kernel launch (stay under CUDA limit)
+    const unsigned long long MAX_BLOCKS_PER_LAUNCH = 1000000000ULL;  // 1 billion blocks per batch
+    const unsigned long long THREADS_PER_BLOCK = threads;
+    const unsigned long long COMBINATIONS_PER_BATCH = MAX_BLOCKS_PER_LAUNCH * THREADS_PER_BLOCK;
+
+    bool found = false;
+    int gpu_found = -1;
+    std::vector<uint16_t> result(24);
+
+    // Process each GPU with batching
+    for (int gpu = 0; gpu < num_gpus && !found; ++gpu) {
+        if (num_phrases_per_gpu[gpu] <= 0) continue;
+
         cudaSetDevice(gpu);
-        cudaDeviceSynchronize();
+        unsigned long long total_this_gpu = total_per_gpu[gpu];
+        unsigned long long processed = 0;
+        unsigned long long batch_num = 0;
+        unsigned long long total_batches = (total_this_gpu + COMBINATIONS_PER_BATCH - 1) / COMBINATIONS_PER_BATCH;
+
+        while (processed < total_this_gpu && !found) {
+            unsigned long long remaining = total_this_gpu - processed;
+            unsigned long long this_batch = std::min(remaining, COMBINATIONS_PER_BATCH);
+            int blocks = (this_batch + threads - 1) / threads;
+
+            // Launch kernel for this batch
+            test_combinations_kernel<<<blocks, threads>>>(
+                d_block1_14_vec[gpu], d_block15_16_vec[gpu], d_block17_vec[gpu], d_block18_19_vec[gpu],
+                d_block20_21_vec[gpu], h_word22, h_word23, d_word24_candidates_vec[gpu],
+                num_phrases_per_gpu[gpu],
+                block15_16.size(),
+                block17.size(),
+                block18_19.size(),
+                block20_21.size(),
+                d_found_vec[gpu], d_result_vec[gpu], d_counter_vec[gpu],
+                processed  // batch offset
+            );
+
+            cudaDeviceSynchronize();
+
+            // Check if found
+            bool h_found;
+            cudaMemcpy(&h_found, d_found_vec[gpu], sizeof(bool), cudaMemcpyDeviceToHost);
+            if (h_found) {
+                found = true;
+                gpu_found = gpu;
+                cudaMemcpy(result.data(), d_result_vec[gpu], 24 * sizeof(uint16_t), cudaMemcpyDeviceToHost);
+                break;
+            }
+
+            processed += this_batch;
+            batch_num++;
+
+            // Progress update every 10 batches
+            if (batch_num % 10 == 0 || processed >= total_this_gpu) {
+                double progress = (double)processed / total_this_gpu * 100.0;
+                std::cout << "\rGPU " << gpu << ": " << std::fixed << std::setprecision(2)
+                          << progress << "% (" << batch_num << "/" << total_batches << " batches)" << std::flush;
+            }
+        }
+        std::cout << std::endl;
     }
 
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
-    // Check results and counters
-    bool found = false;
-    std::vector<uint16_t> result(24);
-    int gpu_found = -1;
-    unsigned long long total_checksums_computed = 0;  // ADDED
+    // Collect checksum counters from all GPUs
+    unsigned long long total_checksums_computed = 0;
 
     for (int gpu = 0; gpu < num_gpus; ++gpu) {
         cudaSetDevice(gpu);
-        bool h_found;
-        cudaMemcpy(&h_found, d_found_vec[gpu], sizeof(bool), cudaMemcpyDeviceToHost);
-
-        // ADDED: Read counter from this GPU
         unsigned long long h_counter;
         cudaMemcpy(&h_counter, d_counter_vec[gpu], sizeof(unsigned long long), cudaMemcpyDeviceToHost);
         total_checksums_computed += h_counter;
-
-        if (h_found) {
-            found = true;
-            gpu_found = gpu;
-            cudaMemcpy(result.data(), d_result_vec[gpu], 24 * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-            break;
-        }
     }
 
     if (found) {
