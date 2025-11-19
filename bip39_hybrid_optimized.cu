@@ -522,7 +522,14 @@ std::string word23 = "always";
 
         if (num_phrases_this_gpu <= 0) continue;
 
-        std::cout << "GPU " << gpu << ": " << num_phrases_this_gpu << " phrases, " 
+        // Calculate total combinations for this GPU
+        unsigned long long total_this_gpu = (unsigned long long)num_phrases_this_gpu *
+                                            block15_16.size() *
+                                            block17.size() *
+                                            block18_19.size() *
+                                            block20_21.size();
+
+        std::cout << "GPU " << gpu << ": " << num_phrases_this_gpu << " phrases, "
                   << total_this_gpu << " combinaisons" << std::endl;
 
         // Extract phrases for this GPU
@@ -559,11 +566,6 @@ std::string word23 = "always";
         cudaMemcpy(d_counter_vec[gpu], &h_counter, sizeof(unsigned long long), cudaMemcpyHostToDevice);  // ADDED
 
         // Calculate blocks for this GPU
-        unsigned long long total_this_gpu = (unsigned long long)num_phrases_this_gpu *
-                                            block15_16.size() *
-                                            block17.size() *
-                                            block18_19.size() *
-                                            block20_21.size();
         int blocks = (total_this_gpu + threads - 1) / threads;
 
         // Launch kernel
