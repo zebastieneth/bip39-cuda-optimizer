@@ -279,7 +279,8 @@ uint16_t word_to_index(const std::string& word, const std::vector<std::string>& 
     if (it != wordlist.end()) {
         return std::distance(wordlist.begin(), it);
     }
-    return 0;
+    std::cerr << "ERROR: Word not found in wordlist: " << word << std::endl;
+    exit(1);
 }
 
 std::vector<std::vector<uint16_t>> load_phrases_file(const std::string& filename, const std::vector<std::string>& wordlist) {
