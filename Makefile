@@ -10,6 +10,7 @@ NVCC_FLAGS = -arch=sm_89 \
              --use_fast_math \
              -Xptxas -O3 \
              -Xcompiler -O3 \
+             -Xcompiler -pthread \
              -lineinfo
 
 # Nom de l'exécutable

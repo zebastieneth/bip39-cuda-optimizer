@@ -9,6 +9,9 @@
 #include <chrono>
 #include <cstring>
 #include <iomanip>
+#include <thread>
+#include <atomic>
+#include <mutex>
 
 // ============================================================================
 // SHA256 CONSTANTS AND MACROS
@@ -571,28 +574,39 @@ std::string word23 = "always";
         cudaMemcpy(d_counter_vec[gpu], &h_counter, sizeof(unsigned long long), cudaMemcpyHostToDevice);
     }
 
-    std::cout << "\n🚀 Calcul en cours sur " << num_gpus << " GPU(s)..." << std::endl;
+    std::cout << "\n🚀 Calcul en cours sur " << num_gpus << " GPU(s) EN PARALLÈLE..." << std::endl;
 
     // Batching parameters - max blocks per kernel launch (stay under CUDA limit)
     const unsigned long long MAX_BLOCKS_PER_LAUNCH = 1000000000ULL;  // 1 billion blocks per batch
     const unsigned long long THREADS_PER_BLOCK = threads;
     const unsigned long long COMBINATIONS_PER_BATCH = MAX_BLOCKS_PER_LAUNCH * THREADS_PER_BLOCK;
 
-    bool found = false;
-    int gpu_found = -1;
+    // Shared state for parallel GPU processing
+    std::atomic<bool> found(false);
+    std::atomic<int> gpu_found(-1);
     std::vector<uint16_t> result(24);
+    std::mutex result_mutex;
+    std::mutex print_mutex;
 
-    // Process each GPU with batching
-    for (int gpu = 0; gpu < num_gpus && !found; ++gpu) {
-        if (num_phrases_per_gpu[gpu] <= 0) continue;
+    // Progress tracking for each GPU
+    std::vector<std::atomic<unsigned long long>> processed_per_gpu(num_gpus);
+    std::vector<unsigned long long> total_batches_per_gpu(num_gpus);
+    for (int gpu = 0; gpu < num_gpus; ++gpu) {
+        processed_per_gpu[gpu] = 0;
+        total_batches_per_gpu[gpu] = (total_per_gpu[gpu] + COMBINATIONS_PER_BATCH - 1) / COMBINATIONS_PER_BATCH;
+    }
+
+    // Lambda function for each GPU thread
+    auto gpu_worker = [&](int gpu) {
+        if (num_phrases_per_gpu[gpu] <= 0) return;
 
         cudaSetDevice(gpu);
         unsigned long long total_this_gpu = total_per_gpu[gpu];
         unsigned long long processed = 0;
         unsigned long long batch_num = 0;
-        unsigned long long total_batches = (total_this_gpu + COMBINATIONS_PER_BATCH - 1) / COMBINATIONS_PER_BATCH;
+        unsigned long long total_batches = total_batches_per_gpu[gpu];
 
-        while (processed < total_this_gpu && !found) {
+        while (processed < total_this_gpu && !found.load()) {
             unsigned long long remaining = total_this_gpu - processed;
             unsigned long long this_batch = std::min(remaining, COMBINATIONS_PER_BATCH);
             int blocks = (this_batch + threads - 1) / threads;
@@ -615,25 +629,42 @@ std::string word23 = "always";
             // Check if found
             bool h_found;
             cudaMemcpy(&h_found, d_found_vec[gpu], sizeof(bool), cudaMemcpyDeviceToHost);
-            if (h_found) {
-                found = true;
-                gpu_found = gpu;
+            if (h_found && !found.exchange(true)) {
+                gpu_found.store(gpu);
+                std::lock_guard<std::mutex> lock(result_mutex);
                 cudaMemcpy(result.data(), d_result_vec[gpu], 24 * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-                break;
             }
 
             processed += this_batch;
             batch_num++;
+            processed_per_gpu[gpu].store(batch_num);
 
             // Progress update every 10 batches
-            if (batch_num % 10 == 0 || processed >= total_this_gpu) {
-                double progress = (double)processed / total_this_gpu * 100.0;
-                std::cout << "\rGPU " << gpu << ": " << std::fixed << std::setprecision(2)
-                          << progress << "% (" << batch_num << "/" << total_batches << " batches)" << std::flush;
+            if (batch_num % 10 == 0) {
+                std::lock_guard<std::mutex> lock(print_mutex);
+                std::cout << "\r";
+                for (int g = 0; g < num_gpus; ++g) {
+                    if (num_phrases_per_gpu[g] > 0) {
+                        double prog = (double)processed_per_gpu[g].load() / total_batches_per_gpu[g] * 100.0;
+                        std::cout << "GPU" << g << ":" << std::fixed << std::setprecision(1) << prog << "% ";
+                    }
+                }
+                std::cout << std::flush;
             }
         }
-        std::cout << std::endl;
+    };
+
+    // Launch threads for all GPUs in parallel
+    std::vector<std::thread> gpu_threads;
+    for (int gpu = 0; gpu < num_gpus; ++gpu) {
+        gpu_threads.emplace_back(gpu_worker, gpu);
     }
+
+    // Wait for all GPU threads to complete
+    for (auto& t : gpu_threads) {
+        t.join();
+    }
+    std::cout << std::endl;
 
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
@@ -648,8 +679,8 @@ std::string word23 = "always";
         total_checksums_computed += h_counter;
     }
 
-    if (found) {
-        std::cout << "\n🎉🎉🎉 === TROUVÉ sur GPU " << gpu_found << " === 🎉🎉🎉" << std::endl;
+    if (found.load()) {
+        std::cout << "\n🎉🎉🎉 === TROUVÉ sur GPU " << gpu_found.load() << " === 🎉🎉🎉" << std::endl;
         std::cout << "Phrase gagnante: " << std::endl;
         for (int i = 0; i < 24; ++i) {
             std::cout << wordlist[result[i]] << " ";
